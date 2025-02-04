@@ -11,7 +11,6 @@ fn main() -> Result<()> {
         _ => {}
     }
 
-    // Parse command and act accordingly
     let command = &args[2];
     match command.as_str() {
         ".dbinfo" => {
@@ -19,11 +18,15 @@ fn main() -> Result<()> {
             let mut header = [0; 100];
             file.read_exact(&mut header)?;
 
-            // The page size is stored at the 16th byte offset, using 2 bytes in big-endian order
-            #[allow(unused_variables)]
             let page_size = u16::from_be_bytes([header[16], header[17]]);
 
             println!("database page size: {}", page_size);
+
+            let mut header = [0u8; 8];
+            file.read_exact(&mut header)?;
+
+            let num_tables = u16::from_be_bytes([header[3], header[4]]);
+            println!("number of tables: {}", num_tables);
         }
         _ => bail!("Missing or invalid command passed: {}", command),
     }
