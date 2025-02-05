@@ -1,5 +1,5 @@
 use clap::Parser;
-use codecrafters_sqlite::{db::DbFile, Cli, Error, Result};
+use codecrafters_sqlite::{db::DbFile, err, Cli, Result};
 
 fn main() {
     if let Err(err) = run() {
@@ -21,7 +21,7 @@ fn run() -> Result<()> {
             println!("number of tables: {}", num_tables);
         }
         _ => {
-            return Err(Error::Other(anyhow::anyhow!("Unknown command: {command}")));
+            return Err(err!("Unknown command: {command}"));
         }
     }
 
