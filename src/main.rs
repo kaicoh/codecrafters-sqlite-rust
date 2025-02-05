@@ -1,34 +1,28 @@
-use anyhow::{bail, Result};
-use std::fs::File;
-use std::io::prelude::*;
+use clap::Parser;
+use codecrafters_sqlite::{db::DbFile, Cli, Error, Result};
 
-fn main() -> Result<()> {
-    // Parse arguments
-    let args = std::env::args().collect::<Vec<_>>();
-    match args.len() {
-        0 | 1 => bail!("Missing <database path> and <command>"),
-        2 => bail!("Missing <command>"),
-        _ => {}
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("{err}");
+        std::process::exit(1);
     }
+}
 
-    let command = &args[2];
+fn run() -> Result<()> {
+    let Cli { db_path, command } = Cli::parse();
+    let mut db = DbFile::from_path(db_path)?;
+
     match command.as_str() {
         ".dbinfo" => {
-            let mut file = File::open(&args[1])?;
-            let mut header = [0; 100];
-            file.read_exact(&mut header)?;
-
-            let page_size = u16::from_be_bytes([header[16], header[17]]);
+            let page_size = db.file_header()?.page_size();
+            let num_tables = db.num_tables()?;
 
             println!("database page size: {}", page_size);
-
-            let mut header = [0u8; 8];
-            file.read_exact(&mut header)?;
-
-            let num_tables = u16::from_be_bytes([header[3], header[4]]);
             println!("number of tables: {}", num_tables);
         }
-        _ => bail!("Missing or invalid command passed: {}", command),
+        _ => {
+            return Err(Error::Other(anyhow::anyhow!("Unknown command: {command}")));
+        }
     }
 
     Ok(())
