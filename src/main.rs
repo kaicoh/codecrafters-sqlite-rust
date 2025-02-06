@@ -20,6 +20,10 @@ fn run() -> Result<()> {
             println!("database page size: {}", page_size);
             println!("number of tables: {}", num_tables);
         }
+        ".tables" => {
+            let tables = db.table_names()?.join(" ");
+            println!("{tables}");
+        }
         _ => {
             return Err(err!("Unknown command: {command}"));
         }

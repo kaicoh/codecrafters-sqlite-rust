@@ -1,7 +1,10 @@
 pub mod file_header;
+mod page;
+mod varint;
 
-use super::{Error, Result};
+use super::{err, utils, Error, Result};
 use file_header::{FileHeader, FILE_HEADER_SIZE};
+use page::Page;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -30,10 +33,26 @@ impl<R: Read + Seek> Db<R> {
         Ok(FileHeader::new(buf))
     }
 
-    pub fn num_tables(&mut self) -> Result<u16> {
-        let mut buf = [0u8; 2];
-        self.read(103, &mut buf)?;
-        Ok(u16::from_be_bytes(buf))
+    pub fn num_tables(&mut self) -> Result<usize> {
+        self.schema_page().num_cells()
+    }
+
+    pub fn table_names(&mut self) -> Result<Vec<String>> {
+        let values = self
+            .schema_page()
+            .cells()?
+            .into_iter()
+            .filter_map(|cell| cell.column(2))
+            .map(|v| v.to_string())
+            .collect::<Vec<String>>();
+        Ok(values)
+    }
+
+    fn schema_page(&mut self) -> Page<'_, R> {
+        Page::builder()
+            .page_header_offset(FILE_HEADER_SIZE as u64)
+            .readable(&mut self.0)
+            .build()
     }
 
     fn read(&mut self, start: u64, buf: &mut [u8]) -> Result<()> {
