@@ -1,68 +1,37 @@
-use super::{err, utils, varint::Varint, Result};
+use super::{err, utils, varint::Varint, PageBuffer, PageNum, Result};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
-#[derive(Debug)]
-pub struct PageBuilder<'a, R: Read + Seek> {
-    page_offset: u64,
-    page_header_offset: u64,
-    readable: Option<&'a mut R>,
+#[derive(Debug, Default)]
+pub struct PageBuilder {
+    header_offset: u64,
+    buf: Option<PageBuffer>,
 }
 
-impl<R: Read + Seek> Default for PageBuilder<'_, R> {
-    fn default() -> Self {
+impl PageBuilder {
+    pub fn header_offset(self, offset: u64) -> Self {
         Self {
-            page_offset: 0,
-            page_header_offset: 0,
-            readable: None,
-        }
-    }
-}
-
-impl<'a, R: Read + Seek> PageBuilder<'a, R> {
-    #[allow(unused)]
-    pub fn page_offset(self, offset: u64) -> Self {
-        Self {
-            page_offset: offset,
+            header_offset: offset,
             ..self
         }
     }
 
-    pub fn page_header_offset(self, offset: u64) -> Self {
+    pub fn buffer(self, buf: PageBuffer) -> Self {
         Self {
-            page_header_offset: offset,
+            buf: Some(buf),
             ..self
         }
     }
 
-    pub fn readable(self, readable: &'a mut R) -> Self {
-        Self {
-            readable: Some(readable),
-            ..self
-        }
-    }
-
-    pub fn build(self) -> Page<'a, R> {
-        let Self {
-            page_offset,
-            page_header_offset,
-            readable,
-        } = self;
-        let readable = readable.expect("Page must have readable");
-
+    pub fn build(self) -> Page {
+        let Self { header_offset, buf } = self;
         Page {
-            page_offset,
-            page_header_offset,
-            readable,
+            header_offset,
+            cursor: Cursor::new(
+                buf.expect("You must set buffer to PageBuilder before building Page"),
+            ),
         }
     }
-}
-
-#[derive(Debug)]
-pub struct Page<'a, R: Read + Seek> {
-    page_offset: u64,
-    page_header_offset: u64,
-    readable: &'a mut R,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -108,7 +77,7 @@ struct Header {
     #[allow(unused)]
     num_of_fragmented_free_bytes: u8,
     #[allow(unused)]
-    right_most_pointer: Option<u32>,
+    right_most_pointer: Option<PageNum>,
 }
 
 impl Header {
@@ -134,8 +103,14 @@ impl Header {
     }
 }
 
-impl<'a, R: Read + Seek> Page<'a, R> {
-    pub fn builder() -> PageBuilder<'a, R> {
+#[derive(Debug)]
+pub struct Page {
+    header_offset: u64,
+    cursor: Cursor<PageBuffer>,
+}
+
+impl Page {
+    pub fn builder() -> PageBuilder {
         PageBuilder::default()
     }
 
@@ -146,11 +121,11 @@ impl<'a, R: Read + Seek> Page<'a, R> {
     pub fn cells(&mut self) -> Result<Vec<Cell>> {
         let mut cells: Vec<Cell> = vec![];
         for p in self.cell_pointers()? {
-            self.set_offset_from_starts(p)?;
-            let record_size = Varint::new(self.readable)?;
-            let rowid = Varint::new(self.readable)?;
+            self.set_offset(p)?;
+            let record_size = Varint::new(&mut self.cursor)?;
+            let rowid = Varint::new(&mut self.cursor)?;
 
-            let buf = utils::read_n_bytes(&mut self.readable, record_size.value() as usize)?;
+            let buf = utils::read_n_bytes(&mut self.cursor, record_size.value() as usize)?;
 
             cells.push(Cell {
                 rowid: rowid.value(),
@@ -162,8 +137,8 @@ impl<'a, R: Read + Seek> Page<'a, R> {
     }
 
     fn header(&mut self) -> Result<Header> {
-        self.set_offset(self.page_header_offset)?;
-        Header::new(&mut self.readable)
+        self.set_offset(self.header_offset)?;
+        Header::new(&mut self.cursor)
     }
 
     fn r#type(&mut self) -> Result<PageType> {
@@ -174,7 +149,7 @@ impl<'a, R: Read + Seek> Page<'a, R> {
         let num_cells = self.num_cells()?;
         self.set_offset_from_header(0)?;
 
-        utils::read_n_bytes(&mut self.readable, 2 * num_cells).map(|bytes| {
+        utils::read_n_bytes(&mut self.cursor, 2 * num_cells).map(|bytes| {
             bytes
                 .chunks(2)
                 .map(|chunk| {
@@ -187,17 +162,13 @@ impl<'a, R: Read + Seek> Page<'a, R> {
         })
     }
 
-    fn set_offset_from_starts(&mut self, offset: u64) -> Result<()> {
-        self.set_offset(self.page_offset + offset)
-    }
-
     fn set_offset_from_header(&mut self, offset: u64) -> Result<()> {
         let header_size = self.r#type()?.header_size() as u64;
-        self.set_offset_from_starts(self.page_header_offset + header_size + offset)
+        self.set_offset(self.header_offset + header_size + offset)
     }
 
     fn set_offset(&mut self, offset: u64) -> Result<()> {
-        self.readable.seek(SeekFrom::Start(offset))?;
+        self.cursor.seek(SeekFrom::Start(offset))?;
         Ok(())
     }
 }

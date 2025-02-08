@@ -10,7 +10,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let Cli { db_path, command } = Cli::parse();
-    let mut db = DbFile::from_path(db_path)?;
+    let db = DbFile::from_path(db_path)?;
 
     match command.as_str() {
         ".dbinfo" => {

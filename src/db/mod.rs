@@ -6,9 +6,12 @@ use super::{err, utils, Error, Result};
 use file_header::{FileHeader, FILE_HEADER_SIZE};
 use page::Page;
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
+    rc::Rc,
+    sync::{Mutex, MutexGuard},
 };
 
 pub type DbFile = Db<File>;
@@ -19,27 +22,36 @@ impl Db<File> {
     }
 }
 
+type PageNum = u32;
+type Pages = HashMap<PageNum, PageBuffer>;
+
 #[derive(Debug)]
-pub struct Db<R: Read + Seek>(R);
+pub struct Db<R: Read + Seek> {
+    r: Mutex<R>,
+    pages: Mutex<Pages>,
+}
 
 impl<R: Read + Seek> Db<R> {
     pub fn new(r: R) -> Self {
-        Self(r)
+        Self {
+            r: Mutex::new(r),
+            pages: Mutex::new(HashMap::new()),
+        }
     }
 
-    pub fn file_header(&mut self) -> Result<FileHeader> {
+    pub fn file_header(&self) -> Result<FileHeader> {
         let mut buf = [0u8; FILE_HEADER_SIZE];
-        self.read(0, &mut buf)?;
+        self.read_db(0, &mut buf)?;
         Ok(FileHeader::new(buf))
     }
 
-    pub fn num_tables(&mut self) -> Result<usize> {
-        self.schema_page().num_cells()
+    pub fn num_tables(&self) -> Result<usize> {
+        self.schema_page()?.num_cells()
     }
 
-    pub fn table_names(&mut self) -> Result<Vec<String>> {
+    pub fn table_names(&self) -> Result<Vec<String>> {
         let values = self
-            .schema_page()
+            .schema_page()?
             .cells()?
             .into_iter()
             .filter_map(|cell| cell.column(2))
@@ -48,16 +60,69 @@ impl<R: Read + Seek> Db<R> {
         Ok(values)
     }
 
-    fn schema_page(&mut self) -> Page<'_, R> {
-        Page::builder()
-            .page_header_offset(FILE_HEADER_SIZE as u64)
-            .readable(&mut self.0)
-            .build()
+    fn page(&self, num: PageNum) -> Result<Page> {
+        if num == 0 {
+            return Err(err!("page number must be greater than 0"));
+        }
+
+        let mut pages = self.lock_pages()?;
+        let buf = match pages.get(&num) {
+            Some(page_buf) => page_buf.clone(),
+            None => {
+                let page_size = self.file_header()?.page_size() as usize;
+                let mut buf = vec![0u8; page_size];
+                let offset = (num - 1) as u64 * page_size as u64;
+                self.read_db(offset, &mut buf)?;
+                pages.insert(num, buf.into());
+                pages.get(&num).unwrap().clone()
+            }
+        };
+
+        let header_offset = if num == 1 { FILE_HEADER_SIZE } else { 0 };
+
+        Ok(Page::builder()
+            .header_offset(header_offset as u64)
+            .buffer(buf)
+            .build())
     }
 
-    fn read(&mut self, start: u64, buf: &mut [u8]) -> Result<()> {
-        self.0.seek(SeekFrom::Start(start))?;
-        self.0.read_exact(buf)?;
+    fn schema_page(&self) -> Result<Page> {
+        self.page(1)
+    }
+
+    fn read_db(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let mut r = self.lock_db()?;
+        r.seek(SeekFrom::Start(offset))?;
+        r.read_exact(buf)?;
         Ok(())
+    }
+
+    fn lock_db(&self) -> Result<MutexGuard<R>> {
+        self.r.lock().map_err(Error::from)
+    }
+
+    fn lock_pages(&self) -> Result<MutexGuard<Pages>> {
+        self.pages.lock().map_err(Error::from)
+    }
+}
+
+#[derive(Debug)]
+struct PageBuffer(Rc<Vec<u8>>);
+
+impl From<Vec<u8>> for PageBuffer {
+    fn from(value: Vec<u8>) -> Self {
+        Self(Rc::new(value))
+    }
+}
+
+impl AsRef<[u8]> for PageBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Clone for PageBuffer {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
     }
 }
