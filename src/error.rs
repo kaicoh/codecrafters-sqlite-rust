@@ -1,5 +1,6 @@
 use super::err;
 use std::io;
+use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 use std::sync::{MutexGuard, PoisonError};
 use thiserror::Error as ThisError;
@@ -11,6 +12,9 @@ pub enum Error {
 
     #[error("ERR - from_utf8: {0}")]
     FromUtf8(#[from] FromUtf8Error),
+
+    #[error("ERR - parse int: {0}")]
+    ParseInt(#[from] ParseIntError),
 
     #[error("ERR - other: {0}")]
     Other(#[from] anyhow::Error),

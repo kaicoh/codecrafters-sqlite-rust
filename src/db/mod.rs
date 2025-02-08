@@ -1,11 +1,13 @@
 mod cell;
 pub mod file_header;
 mod page;
+mod schema_table;
 mod varint;
 
 use super::{err, utils, Error, Result};
 use file_header::{FileHeader, FILE_HEADER_SIZE};
 use page::Page;
+use schema_table::Schema;
 use std::{
     collections::HashMap,
     fs::File,
@@ -55,8 +57,7 @@ impl<R: Read + Seek> Db<R> {
             .schema_page()?
             .cells()?
             .into_iter()
-            .filter_map(|cell| cell.column(2))
-            .map(|v| v.to_string())
+            .filter_map(|cell| Schema::new(cell).ok().map(|row| row.tbl_name().to_string()))
             .collect::<Vec<String>>();
         Ok(values)
     }
@@ -74,8 +75,10 @@ impl<R: Read + Seek> Db<R> {
                 let mut buf = vec![0u8; page_size];
                 let offset = (num - 1) as u64 * page_size as u64;
                 self.read_db(offset, &mut buf)?;
-                pages.insert(num, buf.into());
-                pages.get(&num).unwrap().clone()
+
+                let buf = PageBuffer::from(buf);
+                pages.insert(num, buf.clone());
+                buf
             }
         };
 
