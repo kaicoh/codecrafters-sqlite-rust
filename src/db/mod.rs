@@ -1,3 +1,4 @@
+mod cell;
 pub mod file_header;
 mod page;
 mod varint;

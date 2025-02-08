@@ -1,5 +1,4 @@
-use super::{err, utils, varint::Varint, PageBuffer, PageNum, Result};
-use std::fmt;
+use super::{cell::Cell, err, utils, varint::Varint, PageBuffer, PageNum, Result};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 #[derive(Debug, Default)]
@@ -35,7 +34,7 @@ impl PageBuilder {
 }
 
 #[derive(Debug, Copy, Clone)]
-enum PageType {
+pub enum PageType {
     InteriorIndex,
     InteriorTable,
     LeafIndex,
@@ -119,18 +118,12 @@ impl Page {
     }
 
     pub fn cells(&mut self) -> Result<Vec<Cell>> {
+        let r#type = self.r#type()?;
         let mut cells: Vec<Cell> = vec![];
+
         for p in self.cell_pointers()? {
             self.set_offset(p)?;
-            let record_size = Varint::new(&mut self.cursor)?;
-            let rowid = Varint::new(&mut self.cursor)?;
-
-            let buf = utils::read_n_bytes(&mut self.cursor, record_size.value() as usize)?;
-
-            cells.push(Cell {
-                rowid: rowid.value(),
-                record: Record::new(buf)?,
-            });
+            cells.push(Cell::new(r#type, &mut self.cursor)?);
         }
 
         Ok(cells)
@@ -170,158 +163,5 @@ impl Page {
     fn set_offset(&mut self, offset: u64) -> Result<()> {
         self.cursor.seek(SeekFrom::Start(offset))?;
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct Cell {
-    #[allow(unused)]
-    rowid: u64,
-    record: Record,
-}
-
-impl Cell {
-    pub fn column(&self, num: usize) -> Option<RecordValue> {
-        self.record.column(num)
-    }
-}
-
-#[derive(Debug)]
-pub struct Record(Vec<RecordValue>);
-
-impl Record {
-    fn new(bytes: Vec<u8>) -> Result<Self> {
-        let mut cursor = Cursor::new(bytes);
-
-        let mut headers: Vec<SerialType> = vec![];
-        let header_size = Varint::new(&mut cursor)?;
-        let mut bytes_read = header_size.byte_len();
-
-        while bytes_read < header_size.value() as usize {
-            let v = Varint::new(&mut cursor)?;
-            bytes_read += v.byte_len();
-            headers.push(SerialType::new(v.value()));
-        }
-
-        let mut values: Vec<RecordValue> = vec![];
-
-        for header in headers {
-            let value = RecordValue::new(header, &mut cursor)?;
-            values.push(value);
-        }
-
-        Ok(Self(values))
-    }
-
-    fn column(&self, num: usize) -> Option<RecordValue> {
-        self.0.get(num).cloned()
-    }
-}
-
-#[derive(Debug)]
-pub enum SerialType {
-    Null,
-    TwosComplement8,
-    TwosComplement16,
-    TwosComplement24,
-    TwosComplement32,
-    TwosComplement48,
-    TwosComplement64,
-    Float,
-    Zero,
-    One,
-    Blob(usize),
-    Text(usize),
-}
-
-impl SerialType {
-    fn new(num: u64) -> Self {
-        match num {
-            0 => Self::Null,
-            1 => Self::TwosComplement8,
-            2 => Self::TwosComplement16,
-            3 => Self::TwosComplement24,
-            4 => Self::TwosComplement32,
-            5 => Self::TwosComplement48,
-            6 => Self::TwosComplement64,
-            7 => Self::Float,
-            8 => Self::Zero,
-            9 => Self::One,
-            n if n % 2 == 0 && n >= 12 => Self::Blob((n as usize - 12) / 2),
-            n if n % 2 == 1 && n >= 13 => Self::Text((n as usize - 13) / 2),
-            _ => panic!("Invalid serial type: {num}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum RecordValue {
-    Null,
-    Int(i64),
-    Float(f64),
-    Blob(Vec<u8>),
-    Text(String),
-}
-
-impl RecordValue {
-    fn new<R: Read>(r#type: SerialType, r: &mut R) -> Result<Self> {
-        match r#type {
-            SerialType::Null => Ok(Self::Null),
-            SerialType::TwosComplement8 => {
-                let byte = utils::read_1_byte(r)?;
-                let val = i8::from_be_bytes([byte]);
-                Ok(Self::Int(val as i64))
-            }
-            SerialType::TwosComplement16 => {
-                let bytes = utils::read_2_bytes(r)?;
-                let val = i16::from_be_bytes(bytes);
-                Ok(Self::Int(val as i64))
-            }
-            SerialType::TwosComplement24 => {
-                let _bytes = utils::read_3_bytes(r)?;
-                unimplemented!()
-            }
-            SerialType::TwosComplement32 => {
-                let bytes = utils::read_4_bytes(r)?;
-                let val = i32::from_be_bytes(bytes);
-                Ok(Self::Int(val as i64))
-            }
-            SerialType::TwosComplement48 => {
-                let _bytes = utils::read_6_bytes(r)?;
-                unimplemented!()
-            }
-            SerialType::TwosComplement64 => {
-                let bytes = utils::read_8_bytes(r)?;
-                let val = i64::from_be_bytes(bytes);
-                Ok(Self::Int(val))
-            }
-            SerialType::Float => {
-                let bytes = utils::read_8_bytes(r)?;
-                let val = f64::from_be_bytes(bytes);
-                Ok(Self::Float(val))
-            }
-            SerialType::Zero => Ok(Self::Int(0)),
-            SerialType::One => Ok(Self::Int(1)),
-            SerialType::Blob(n) => {
-                let buf = utils::read_n_bytes(r, n)?;
-                Ok(Self::Blob(buf))
-            }
-            SerialType::Text(n) => {
-                let buf = utils::read_n_bytes(r, n)?;
-                Ok(Self::Text(String::from_utf8(buf)?))
-            }
-        }
-    }
-}
-
-impl fmt::Display for RecordValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Null => write!(f, "NULL"),
-            Self::Int(n) => write!(f, "{n}"),
-            Self::Float(n) => write!(f, "{n}"),
-            Self::Blob(bytes) => write!(f, "{bytes:?}"),
-            Self::Text(t) => write!(f, "{t}"),
-        }
     }
 }
