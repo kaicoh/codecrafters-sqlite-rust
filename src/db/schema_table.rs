@@ -3,9 +3,11 @@ use super::{cell::Cell, err, Error, PageNum, Result};
 #[derive(Debug)]
 pub struct Schema {
     r#type: String,
+    #[allow(unused)]
     name: String,
     tbl_name: String,
     rootpage: PageNum,
+    #[allow(unused)]
     sql: String,
 }
 
@@ -55,7 +57,15 @@ impl Schema {
         cell.try_into()
     }
 
+    pub fn r#type(&self) -> &str {
+        self.r#type.as_str()
+    }
+
     pub fn tbl_name(&self) -> &str {
         self.tbl_name.as_str()
+    }
+
+    pub fn rootpage(&self) -> PageNum {
+        self.rootpage
     }
 }

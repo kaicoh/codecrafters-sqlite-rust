@@ -2,6 +2,7 @@ mod cell;
 pub mod file_header;
 mod page;
 mod schema_table;
+mod table;
 mod varint;
 
 use super::{err, utils, Error, Result};
@@ -16,6 +17,7 @@ use std::{
     rc::Rc,
     sync::{Mutex, MutexGuard},
 };
+pub use table::{Table, TableRows};
 
 pub type DbFile = Db<File>;
 
@@ -54,12 +56,33 @@ impl<R: Read + Seek> Db<R> {
 
     pub fn table_names(&self) -> Result<Vec<String>> {
         let values = self
+            .schemas()?
+            .map(|row| row.tbl_name().to_string())
+            .collect::<Vec<String>>();
+        Ok(values)
+    }
+
+    pub fn table(&self, name: &str) -> Result<Table<'_, R>> {
+        let rootpage = self
+            .schemas()?
+            .find_map(|schema| {
+                if schema.r#type() == "table" && schema.tbl_name() == name {
+                    Some(schema.rootpage())
+                } else {
+                    None
+                }
+            })
+            .ok_or(err!("Not found \"{name}\" table"))?;
+
+        Ok(Table::new(self, rootpage))
+    }
+
+    fn schemas(&self) -> Result<impl Iterator<Item = Schema>> {
+        Ok(self
             .schema_page()?
             .cells()?
             .into_iter()
-            .filter_map(|cell| Schema::new(cell).ok().map(|row| row.tbl_name().to_string()))
-            .collect::<Vec<String>>();
-        Ok(values)
+            .filter_map(|cell| Schema::new(cell).ok()))
     }
 
     fn page(&self, num: PageNum) -> Result<Page> {

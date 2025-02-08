@@ -2,7 +2,7 @@ use super::{page::PageType, utils, varint::Varint, PageNum, Result};
 use std::fmt;
 use std::io::{Cursor, Read, Seek};
 
-type RowId = u64;
+pub type RowId = u64;
 
 #[derive(Debug)]
 pub enum Cell {
@@ -27,6 +27,13 @@ impl Cell {
             payload.column(num)
         } else {
             None
+        }
+    }
+
+    pub fn rowid(&self) -> Option<RowId> {
+        match self {
+            Self::InteriorTable { rowid, .. } | Self::LeafTable { rowid, .. } => Some(*rowid),
+            _ => None,
         }
     }
 

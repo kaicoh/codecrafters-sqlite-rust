@@ -1,4 +1,7 @@
-use super::{cell::Cell, err, utils, varint::Varint, PageBuffer, PageNum, Result};
+use super::{
+    cell::{Cell, RowId},
+    err, utils, PageBuffer, PageNum, Result,
+};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 #[derive(Debug, Default)]
@@ -129,6 +132,26 @@ impl Page {
         Ok(cells)
     }
 
+    pub fn btree_scan(&mut self, key: RowId) -> Result<BtreeSearch> {
+        match self.r#type()? {
+            PageType::InteriorTable => {
+                let page_num = match self.cells()?.into_iter().find_map(next_page(key)) {
+                    Some(left) => left,
+                    None => self
+                        .header()?
+                        .right_most_pointer
+                        .ok_or(err!("Not set right most pointer in interior table page"))?,
+                };
+                Ok(BtreeSearch::Pointer(page_num))
+            }
+            PageType::LeafTable => {
+                let cell = self.cells()?.into_iter().find(next_cell(key));
+                Ok(BtreeSearch::Leaf(cell))
+            }
+            _ => Err(err!("Cannot get index b-tree node from rowid")),
+        }
+    }
+
     fn header(&mut self) -> Result<Header> {
         self.set_offset(self.header_offset)?;
         Header::new(&mut self.cursor)
@@ -164,4 +187,25 @@ impl Page {
         self.cursor.seek(SeekFrom::Start(offset))?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub enum BtreeSearch {
+    Pointer(PageNum),
+    Leaf(Option<Cell>),
+}
+
+fn next_page(key: RowId) -> Box<dyn FnMut(Cell) -> Option<PageNum>> {
+    Box::new(move |cell: Cell| {
+        if let Cell::InteriorTable { left, rowid } = cell {
+            if rowid >= key {
+                return Some(left);
+            }
+        }
+        None
+    })
+}
+
+fn next_cell(key: RowId) -> Box<dyn FnMut(&Cell) -> bool> {
+    Box::new(move |cell: &Cell| cell.rowid().is_some_and(|rowid| rowid >= key))
 }

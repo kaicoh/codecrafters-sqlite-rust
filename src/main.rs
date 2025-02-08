@@ -24,6 +24,11 @@ fn run() -> Result<()> {
             let tables = db.table_names()?.join(" ");
             println!("{tables}");
         }
+        cmd if cmd.starts_with("select count(*) from ") => {
+            let name = cmd.trim_start_matches("select count(*) from ");
+            let table = db.table(name)?;
+            println!("{}", table.rows()?.count());
+        }
         _ => {
             return Err(err!("Unknown command: {command}"));
         }
