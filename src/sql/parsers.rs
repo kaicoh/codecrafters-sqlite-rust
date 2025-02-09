@@ -1,4 +1,5 @@
 use nom::{
+    branch::alt,
     bytes::complete::{tag, tag_no_case, take_while, take_while1},
     character::complete::{multispace0, multispace1},
     combinator::opt,
@@ -11,8 +12,7 @@ type StrParser = dyn Fn(&str) -> IResult<&str, &str>;
 
 type TableName<'a> = &'a str;
 type ColName<'a> = &'a str;
-type ColType<'a> = &'a str;
-type ColDef<'a> = (ColName<'a>, ColType<'a>);
+type ColDef<'a> = &'a str;
 type Condition<'a> = (ColName<'a>, &'a str);
 
 pub fn parse_select(
@@ -20,7 +20,7 @@ pub fn parse_select(
 ) -> IResult<&str, (Vec<ColName<'_>>, TableName<'_>, Vec<Condition<'_>>)> {
     let (remaining, columns) = delimited(
         parse_keyword("select"),
-        parse_comma_separated_identifiers,
+        parse_comma_separated_cols,
         parse_keyword("from"),
     )
     .parse(input)?;
@@ -45,7 +45,10 @@ pub fn parse_create_table(input: &str) -> IResult<&str, (Vec<ColDef<'_>>, TableN
         trim(tag(")")),
     )
     .parse(remaining)?;
-    Ok((remaining, (col_defs, table)))
+    Ok((
+        remaining,
+        (col_defs, table.trim_matches('\'').trim_matches('"')),
+    ))
 }
 
 fn parse_keyword(keyword: &'static str) -> Box<StrParser> {
@@ -54,8 +57,8 @@ fn parse_keyword(keyword: &'static str) -> Box<StrParser> {
     })
 }
 
-fn parse_comma_separated_identifiers(input: &str) -> IResult<&str, Vec<&str>> {
-    separated_list1(trim(tag(",")), trim(parse_identifier)).parse(input)
+fn parse_comma_separated_cols(input: &str) -> IResult<&str, Vec<&str>> {
+    separated_list1(trim(tag(",")), trim(parse_column)).parse(input)
 }
 
 fn parse_comma_separated_col_defs(input: &str) -> IResult<&str, Vec<ColDef<'_>>> {
@@ -73,10 +76,8 @@ fn trim<'a>(
 }
 
 fn parse_col_defs(input: &str) -> IResult<&str, ColDef<'_>> {
-    let (remaining, col_name) = preceded(multispace0, parse_col_name_and_def).parse(input)?;
-    let (remaining, col_type) = preceded(multispace0, parse_col_name_and_def).parse(remaining)?;
-    let (remaining, _) = take_while(is_any_line_chars).parse(remaining)?;
-    Ok((remaining, (col_name, col_type)))
+    let (remaining, col_def) = preceded(multispace0, take_while(is_any_line_chars)).parse(input)?;
+    Ok((remaining, col_def))
 }
 
 fn parse_eq_condition(input: &str) -> IResult<&str, Condition<'_>> {
@@ -89,36 +90,60 @@ fn parse_eq_condition(input: &str) -> IResult<&str, Condition<'_>> {
     ))
 }
 
-fn parse_identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(is_identifier_chars).parse(input)
+fn parse_column(input: &str) -> IResult<&str, &str> {
+    take_while1(is_identifier_or_fn_chars).parse(input)
 }
 
 fn parse_table_name(input: &str) -> IResult<&str, &str> {
-    take_while1(is_table_name_chars).parse(input)
+    alt((
+        take_while1(is_identifier_chars),
+        parse_double_quoted,
+        parse_single_quoted,
+    ))
+    .parse(input)
 }
 
 fn parse_col_name_and_def(input: &str) -> IResult<&str, &str> {
-    take_while1(is_table_name_chars).parse(input)
+    take_while1(is_identifier_chars).parse(input)
 }
 
 fn parse_any_value(input: &str) -> IResult<&str, &str> {
-    take_while1(is_any_value_chars).parse(input)
+    alt((
+        take_while1(is_identifier_chars),
+        parse_double_quoted,
+        parse_single_quoted,
+    ))
+    .parse(input)
 }
 
-fn is_identifier_chars(c: char) -> bool {
+fn parse_double_quoted(input: &str) -> IResult<&str, &str> {
+    delimited(
+        trim(tag("\"")),
+        take_while1(is_any_line_chars),
+        trim(tag("\"")),
+    )
+    .parse(input)
+}
+
+fn parse_single_quoted(input: &str) -> IResult<&str, &str> {
+    delimited(
+        trim(tag("'")),
+        take_while1(is_any_line_chars),
+        trim(tag("'")),
+    )
+    .parse(input)
+}
+
+fn is_identifier_or_fn_chars(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '*' || c == '(' || c == ')'
 }
 
-fn is_table_name_chars(c: char) -> bool {
+fn is_identifier_chars(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
 fn is_any_line_chars(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c.is_ascii_whitespace()
-}
-
-fn is_any_value_chars(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '\'' || c == '"'
+    is_identifier_chars(c) || c.is_ascii_whitespace()
 }
 
 #[cfg(test)]
@@ -166,11 +191,11 @@ mod tests {
         assert_eq!(
             columns,
             vec![
-                ("type", "text"),
-                ("name", "text"),
-                ("tbl_name", "text"),
-                ("rootpage", "integer"),
-                ("sql", "text")
+                "type text",
+                "name text",
+                "tbl_name text",
+                "rootpage integer",
+                "sql text\n",
             ]
         );
         assert_eq!(table, "sqlite_schema");
@@ -184,14 +209,35 @@ mod tests {
         let (_, (columns, table)) = parse_create_table(input)?;
         assert_eq!(
             columns,
-            vec![("id", "integer"), ("name", "text"), ("description", "text"),]
+            vec![
+                "id integer primary key autoincrement",
+                "name text",
+                "description text\n"
+            ]
         );
         assert_eq!(table, "oranges");
 
         let input = "CREATE TABLE watermelon (id integer primary key, name text)";
         let (_, (columns, table)) = parse_create_table(input)?;
-        assert_eq!(columns, vec![("id", "integer"), ("name", "text"),]);
+        assert_eq!(columns, vec!["id integer primary key", "name text"]);
         assert_eq!(table, "watermelon");
+
+        let input = "CREATE TABLE \"superheroes\" (id integer primary key autoincrement, name text not null, eye_color text, hair_color text, appearance_count integer, first_appearance text, first_appearance_year text)";
+        let (_, (columns, table)) = parse_create_table(input)?;
+        assert_eq!(
+            columns,
+            vec![
+                "id integer primary key autoincrement",
+                "name text not null",
+                "eye_color text",
+                "hair_color text",
+                "appearance_count integer",
+                "first_appearance text",
+                "first_appearance_year text",
+            ]
+        );
+        assert_eq!(table, "superheroes");
+
         Ok(())
     }
 
@@ -203,17 +249,20 @@ mod tests {
             ";
         let (remaining, parsed) = parse_comma_separated_col_defs(input)?;
         assert_eq!(remaining, "");
-        assert_eq!(parsed, vec![("type", "text"), ("name", "text")]);
+        assert_eq!(parsed, vec!["type text", "name text\n"]);
 
         let input = "\n tbl_name text,rootpage  integer";
         let (remaining, parsed) = parse_comma_separated_col_defs(input)?;
         assert_eq!(remaining, "");
-        assert_eq!(parsed, vec![("tbl_name", "text"), ("rootpage", "integer")]);
+        assert_eq!(parsed, vec!["tbl_name text", "rootpage  integer"]);
 
         let input = "id integer primary key autoincrement,\n\tname  text";
         let (remaining, parsed) = parse_comma_separated_col_defs(input)?;
         assert_eq!(remaining, "");
-        assert_eq!(parsed, vec![("id", "integer"), ("name", "text")]);
+        assert_eq!(
+            parsed,
+            vec!["id integer primary key autoincrement", "name  text"]
+        );
 
         Ok(())
     }
@@ -246,28 +295,34 @@ mod tests {
         assert_eq!(table, "apples");
         assert_eq!(conditions, vec![("color", "Yellow")]);
 
+        let input = "SELECT id, name FROM superheroes WHERE eye_color = 'Pink Eyes'";
+        let (_, (columns, table, conditions)) = parse_select(input)?;
+        assert_eq!(columns, vec!["id", "name"]);
+        assert_eq!(table, "superheroes");
+        assert_eq!(conditions, vec![("eye_color", "Pink Eyes")]);
+
         Ok(())
     }
 
     #[test]
     fn it_parses_comma_separated_string() -> TestResult {
         let input = "foo,bar,baz";
-        let (remaining, parsed) = parse_comma_separated_identifiers(input)?;
+        let (remaining, parsed) = parse_comma_separated_cols(input)?;
         assert_eq!(remaining, "");
         assert_eq!(parsed, vec!["foo", "bar", "baz"]);
 
         let input = " foo ,\nbar\n, baz ";
-        let (remaining, parsed) = parse_comma_separated_identifiers(input)?;
+        let (remaining, parsed) = parse_comma_separated_cols(input)?;
         assert_eq!(remaining, "");
         assert_eq!(parsed, vec!["foo", "bar", "baz"]);
 
         let input = " foo ";
-        let (remaining, parsed) = parse_comma_separated_identifiers(input)?;
+        let (remaining, parsed) = parse_comma_separated_cols(input)?;
         assert_eq!(remaining, "");
         assert_eq!(parsed, vec!["foo"]);
 
         let input = "*";
-        let (remaining, parsed) = parse_comma_separated_identifiers(input)?;
+        let (remaining, parsed) = parse_comma_separated_cols(input)?;
         assert_eq!(remaining, "");
         assert_eq!(parsed, vec!["*"]);
 
@@ -276,7 +331,7 @@ mod tests {
 
     #[test]
     fn it_trims_string() -> TestResult {
-        let mut parser = trim(parse_identifier);
+        let mut parser = trim(parse_column);
         let input = "\n foo\t\r";
         let (remaining, parsed) = parser.parse(input)?;
         assert_eq!(remaining, "");
@@ -298,29 +353,69 @@ mod tests {
     #[test]
     fn it_parses_identifiers() -> TestResult {
         let input = "foobar baz";
-        let (remaining, parsed) = parse_identifier(input)?;
+        let (remaining, parsed) = parse_column(input)?;
         assert_eq!(remaining, " baz");
         assert_eq!(parsed, "foobar");
 
         let input = "* baz";
-        let (remaining, parsed) = parse_identifier(input)?;
+        let (remaining, parsed) = parse_column(input)?;
         assert_eq!(remaining, " baz");
         assert_eq!(parsed, "*");
 
         let input = "foo* baz";
-        let (remaining, parsed) = parse_identifier(input)?;
+        let (remaining, parsed) = parse_column(input)?;
         assert_eq!(remaining, " baz");
         assert_eq!(parsed, "foo*");
 
         let input = "foo_bar baz";
-        let (remaining, parsed) = parse_identifier(input)?;
+        let (remaining, parsed) = parse_column(input)?;
         assert_eq!(remaining, " baz");
         assert_eq!(parsed, "foo_bar");
 
         let input = "foo_bar";
-        let (remaining, parsed) = parse_identifier(input)?;
+        let (remaining, parsed) = parse_column(input)?;
         assert_eq!(remaining, "");
         assert_eq!(parsed, "foo_bar");
+
+        Ok(())
+    }
+
+    #[test]
+    fn it_parses_double_quoted_string() -> TestResult {
+        let input = "\"foo\"";
+        let (remaining, parsed) = parse_double_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo");
+
+        let input = " \"foo\" ";
+        let (remaining, parsed) = parse_double_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo");
+
+        let input = "\"foo bar\"";
+        let (remaining, parsed) = parse_double_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo bar");
+
+        Ok(())
+    }
+
+    #[test]
+    fn it_parses_single_quoted_string() -> TestResult {
+        let input = "'foo'";
+        let (remaining, parsed) = parse_single_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo");
+
+        let input = " 'foo' ";
+        let (remaining, parsed) = parse_single_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo");
+
+        let input = "'foo bar'";
+        let (remaining, parsed) = parse_single_quoted(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, "foo bar");
 
         Ok(())
     }

@@ -5,6 +5,8 @@ use super::{
     sql::parsers::parse_create_table,
     Db, Page, PageNum, Result, Schema,
 };
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::io::{Read, Seek};
 
 #[derive(Debug)]
@@ -12,22 +14,24 @@ pub struct Table<'a, R: Read + Seek> {
     db_ref: &'a Db<R>,
     rootpage: PageNum,
     name: String,
-    columns: Vec<(String, String)>,
+    columns: Vec<TableColumn>,
 }
 
 impl<'a, R: Read + Seek> Table<'a, R> {
     pub fn new(db_ref: &'a Db<R>, schema: Schema) -> Result<Self> {
         let rootpage = schema.rootpage();
-        let (_, (columns, name)) = parse_create_table(schema.sql()).map_err(|e| err!("{e}"))?;
+        let (_, (col_defs, name)) = parse_create_table(schema.sql()).map_err(|e| err!("{e}"))?;
+
+        let mut columns: Vec<TableColumn> = vec![];
+        for col_def in col_defs {
+            columns.push(TableColumn::new(col_def)?);
+        }
 
         Ok(Self {
             db_ref,
             rootpage,
             name: name.into(),
-            columns: columns
-                .into_iter()
-                .map(|(a, b)| (a.into(), b.into()))
-                .collect(),
+            columns,
         })
     }
 
@@ -43,14 +47,12 @@ impl<'a, R: Read + Seek> Table<'a, R> {
         })
     }
 
-    pub fn cols(&self) -> impl Iterator<Item = &String> {
-        self.columns.iter().map(|(name, _)| name)
+    fn col_idx(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|col| col.name() == name)
     }
 
-    fn col_idx(&self, name: &str) -> Option<usize> {
-        self.columns
-            .iter()
-            .position(|(col, _)| col.as_str() == name)
+    fn primary_key(&self) -> Option<&TableColumn> {
+        self.columns.iter().find(|col| col.primary_key)
     }
 
     fn rootpage(&self) -> Result<Page> {
@@ -104,9 +106,83 @@ impl<'a, R: Read + Seek> TableRow<'a, R> {
     }
 
     pub fn col(&self, name: &str) -> Result<RecordValue> {
-        self.table
-            .col_idx(name)
-            .and_then(|idx| self.cell.column(idx))
-            .ok_or(err!("Invalid column name: {name}"))
+        match self.table.primary_key() {
+            Some(key) if key.name() == name && key.is_rowid() => self
+                .cell
+                .rowid()
+                .map(RecordValue::PrimaryKey)
+                .ok_or(err!("Invalid primary key")),
+            _ => self
+                .table
+                .col_idx(name)
+                .and_then(|idx| self.cell.column(idx))
+                .ok_or(err!("Invalid column name: {name}")),
+        }
+    }
+}
+
+static COL_DEF: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?<name>\w+)\s+(?<ty>\w+)").unwrap());
+
+#[derive(Debug, PartialEq)]
+pub struct TableColumn {
+    r#type: String,
+    name: String,
+    primary_key: bool,
+}
+
+impl TableColumn {
+    pub fn new(def: &str) -> Result<Self> {
+        match COL_DEF.captures(def) {
+            Some(caps) => {
+                let name = &caps["name"];
+                let r#type = &caps["ty"];
+                let primary_key = def.contains("primary key");
+
+                Ok(Self {
+                    r#type: r#type.into(),
+                    name: name.into(),
+                    primary_key,
+                })
+            }
+            None => Err(err!("Cannot parse table column. {def}")),
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn is_rowid(&self) -> bool {
+        self.r#type.to_lowercase().as_str() == "integer" && self.primary_key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_creates_table_column_from_string() {
+        let def = "name text";
+        let col = TableColumn::new(def).unwrap();
+        assert_eq!(
+            col,
+            TableColumn {
+                r#type: "text".into(),
+                name: "name".into(),
+                primary_key: false,
+            }
+        );
+
+        let def = "id integer primary key autoincrement";
+        let col = TableColumn::new(def).unwrap();
+        assert_eq!(
+            col,
+            TableColumn {
+                r#type: "integer".into(),
+                name: "id".into(),
+                primary_key: true,
+            }
+        );
     }
 }

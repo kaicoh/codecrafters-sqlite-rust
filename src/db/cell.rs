@@ -146,6 +146,7 @@ impl SerialType {
 
 #[derive(Debug, Clone)]
 pub enum RecordValue {
+    PrimaryKey(RowId),
     Null,
     Int(i64),
     Float(f64),
@@ -207,6 +208,7 @@ impl RecordValue {
 impl fmt::Display for RecordValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PrimaryKey(n) => write!(f, "{n}"),
             Self::Null => write!(f, "NULL"),
             Self::Int(n) => write!(f, "{n}"),
             Self::Float(n) => write!(f, "{n}"),

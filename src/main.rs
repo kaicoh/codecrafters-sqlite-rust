@@ -24,7 +24,7 @@ fn run() -> Result<()> {
             let tables = db.table_names()?.join(" ");
             println!("{tables}");
         }
-        cmd if cmd.starts_with("select") => {
+        cmd if cmd.to_lowercase().starts_with("select") => {
             let sql = Sql::new(cmd)?;
 
             for line in sql.execute(&db)? {
