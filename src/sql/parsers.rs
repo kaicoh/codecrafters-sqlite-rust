@@ -1,7 +1,8 @@
 use nom::{
     bytes::complete::{tag, tag_no_case, take_while, take_while1},
     character::complete::{multispace0, multispace1},
-    multi::separated_list1,
+    combinator::opt,
+    multi::{separated_list0, separated_list1},
     sequence::{delimited, preceded},
     IResult, Parser,
 };
@@ -12,8 +13,11 @@ type TableName<'a> = &'a str;
 type ColName<'a> = &'a str;
 type ColType<'a> = &'a str;
 type ColDef<'a> = (ColName<'a>, ColType<'a>);
+type Condition<'a> = (ColName<'a>, &'a str);
 
-pub fn parse_select(input: &str) -> IResult<&str, (Vec<ColName<'_>>, TableName<'_>)> {
+pub fn parse_select(
+    input: &str,
+) -> IResult<&str, (Vec<ColName<'_>>, TableName<'_>, Vec<Condition<'_>>)> {
     let (remaining, columns) = delimited(
         parse_keyword("select"),
         parse_comma_separated_identifiers,
@@ -21,7 +25,14 @@ pub fn parse_select(input: &str) -> IResult<&str, (Vec<ColName<'_>>, TableName<'
     )
     .parse(input)?;
     let (remaining, table) = parse_table_name(remaining)?;
-    Ok((remaining, (columns, table)))
+
+    let (remaining, r#where) = opt(parse_keyword("where")).parse(remaining)?;
+    if r#where.is_none() {
+        Ok((remaining, (columns, table, vec![])))
+    } else {
+        let (remaining, conditions) = parse_and_conditions(remaining)?;
+        Ok((remaining, (columns, table, conditions)))
+    }
 }
 
 pub fn parse_create_table(input: &str) -> IResult<&str, (Vec<ColDef<'_>>, TableName<'_>)> {
@@ -51,6 +62,10 @@ fn parse_comma_separated_col_defs(input: &str) -> IResult<&str, Vec<ColDef<'_>>>
     separated_list1(trim(tag(",")), parse_col_defs).parse(input)
 }
 
+fn parse_and_conditions(input: &str) -> IResult<&str, Vec<Condition<'_>>> {
+    separated_list0(trim(tag_no_case("and")), parse_eq_condition).parse(input)
+}
+
 fn trim<'a>(
     f: impl Parser<&'a str, Output = &'a str, Error = nom::error::Error<&'a str>>,
 ) -> impl Parser<&'a str, Output = &'a str, Error = nom::error::Error<&'a str>> {
@@ -62,6 +77,16 @@ fn parse_col_defs(input: &str) -> IResult<&str, ColDef<'_>> {
     let (remaining, col_type) = preceded(multispace0, parse_col_name_and_def).parse(remaining)?;
     let (remaining, _) = take_while(is_any_line_chars).parse(remaining)?;
     Ok((remaining, (col_name, col_type)))
+}
+
+fn parse_eq_condition(input: &str) -> IResult<&str, Condition<'_>> {
+    let (remaining, col_name) = preceded(multispace0, parse_col_name_and_def).parse(input)?;
+    let (remaining, _) = trim(tag("=")).parse(remaining)?;
+    let (remaining, value) = preceded(multispace0, parse_any_value).parse(remaining)?;
+    Ok((
+        remaining,
+        (col_name, value.trim_matches('\'').trim_matches('"')),
+    ))
 }
 
 fn parse_identifier(input: &str) -> IResult<&str, &str> {
@@ -76,6 +101,10 @@ fn parse_col_name_and_def(input: &str) -> IResult<&str, &str> {
     take_while1(is_table_name_chars).parse(input)
 }
 
+fn parse_any_value(input: &str) -> IResult<&str, &str> {
+    take_while1(is_any_value_chars).parse(input)
+}
+
 fn is_identifier_chars(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '*' || c == '(' || c == ')'
 }
@@ -88,12 +117,41 @@ fn is_any_line_chars(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c.is_ascii_whitespace()
 }
 
+fn is_any_value_chars(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '\'' || c == '"'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::error::Error;
 
     type TestResult = std::result::Result<(), Box<dyn Error>>;
+
+    #[test]
+    fn it_parses_and_separated_conditions() -> TestResult {
+        let input = "foo = 'bar' and baz = \"foobarbaz\"";
+        let (remaining, parsed) = parse_and_conditions(input)?;
+        assert_eq!(remaining, "");
+        assert_eq!(parsed, vec![("foo", "bar"), ("baz", "foobarbaz")]);
+        Ok(())
+    }
+
+    #[test]
+    fn it_parses_eq_condition() -> TestResult {
+        let input = "foo = 'bar'";
+        let (_, (col, val)) = parse_eq_condition(input)?;
+        assert_eq!(col, "foo");
+        assert_eq!(val, "bar");
+
+        let input = "\nfoo = bar and ...";
+        let (remaining, (col, val)) = parse_eq_condition(input)?;
+        assert_eq!(remaining, " and ...");
+        assert_eq!(col, "foo");
+        assert_eq!(val, "bar");
+
+        Ok(())
+    }
 
     #[test]
     fn it_parses_create_table_sentences() -> TestResult {
@@ -163,24 +221,30 @@ mod tests {
     #[test]
     fn it_parses_select_sentences() -> TestResult {
         let input = "SELECT name, producer FROM apples";
-        let (_, (columns, table)) = parse_select(input)?;
+        let (_, (columns, table, _)) = parse_select(input)?;
         assert_eq!(columns, vec!["name", "producer"]);
         assert_eq!(table, "apples");
 
         let input = "SELECT * FROM oranges";
-        let (_, (columns, table)) = parse_select(input)?;
+        let (_, (columns, table, _)) = parse_select(input)?;
         assert_eq!(columns, vec!["*"]);
         assert_eq!(table, "oranges");
 
         let input = "SELECT name, foo_bar FROM grapes";
-        let (_, (columns, table)) = parse_select(input)?;
+        let (_, (columns, table, _)) = parse_select(input)?;
         assert_eq!(columns, vec!["name", "foo_bar"]);
         assert_eq!(table, "grapes");
 
         let input = "SELECT count(*) FROM grapes";
-        let (_, (columns, table)) = parse_select(input)?;
+        let (_, (columns, table, _)) = parse_select(input)?;
         assert_eq!(columns, vec!["count(*)"]);
         assert_eq!(table, "grapes");
+
+        let input = "SELECT name, color FROM apples WHERE color = 'Yellow'";
+        let (_, (columns, table, conditions)) = parse_select(input)?;
+        assert_eq!(columns, vec!["name", "color"]);
+        assert_eq!(table, "apples");
+        assert_eq!(conditions, vec![("color", "Yellow")]);
 
         Ok(())
     }

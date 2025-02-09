@@ -76,11 +76,7 @@ impl<'a, R: Read + Seek> Iterator for TableRows<'a, R> {
                 .table
                 .db_ref
                 .page(p)
-                .and_then(|mut page| {
-                    let num_cells = page.num_cells().unwrap();
-                    println!("page num: {p}, num_cells: {num_cells}");
-                    page.btree_scan(self.rowid + 1)
-                })
+                .and_then(|mut page| page.btree_scan(self.rowid + 1))
                 .unwrap();
         }
 

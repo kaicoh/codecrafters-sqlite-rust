@@ -17,7 +17,7 @@ use std::{
     rc::Rc,
     sync::{Mutex, MutexGuard},
 };
-pub use table::{Table, TableRows};
+pub use table::{Table, TableRow, TableRows};
 
 pub type DbFile = Db<File>;
 

@@ -215,3 +215,12 @@ impl fmt::Display for RecordValue {
         }
     }
 }
+
+impl PartialEq<&str> for RecordValue {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            Self::Text(t) => t.as_str() == *other,
+            _ => false,
+        }
+    }
+}
