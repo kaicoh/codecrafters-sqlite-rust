@@ -1,5 +1,5 @@
 use clap::Parser;
-use codecrafters_sqlite::{db::DbFile, err, Cli, Result};
+use codecrafters_sqlite::{db::DbFile, err, Cli, Result, Sql};
 
 fn main() {
     if let Err(err) = run() {
@@ -24,10 +24,12 @@ fn run() -> Result<()> {
             let tables = db.table_names()?.join(" ");
             println!("{tables}");
         }
-        cmd if cmd.starts_with("select count(*) from ") => {
-            let name = cmd.trim_start_matches("select count(*) from ");
-            let table = db.table(name)?;
-            println!("{}", table.rows()?.count());
+        cmd if cmd.starts_with("select") => {
+            let sql = Sql::new(cmd)?;
+
+            for line in sql.execute(&db)? {
+                println!("{line}");
+            }
         }
         _ => {
             return Err(err!("Unknown command: {command}"));

@@ -7,7 +7,6 @@ pub struct Schema {
     name: String,
     tbl_name: String,
     rootpage: PageNum,
-    #[allow(unused)]
     sql: String,
 }
 
@@ -67,5 +66,9 @@ impl Schema {
 
     pub fn rootpage(&self) -> PageNum {
         self.rootpage
+    }
+
+    pub fn sql(&self) -> &str {
+        self.sql.as_str()
     }
 }

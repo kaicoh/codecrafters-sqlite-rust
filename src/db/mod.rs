@@ -5,7 +5,7 @@ mod schema_table;
 mod table;
 mod varint;
 
-use super::{err, utils, Error, Result};
+use super::{err, sql, utils, Error, Result};
 use file_header::{FileHeader, FILE_HEADER_SIZE};
 use page::Page;
 use schema_table::Schema;
@@ -63,18 +63,12 @@ impl<R: Read + Seek> Db<R> {
     }
 
     pub fn table(&self, name: &str) -> Result<Table<'_, R>> {
-        let rootpage = self
+        let schema = self
             .schemas()?
-            .find_map(|schema| {
-                if schema.r#type() == "table" && schema.tbl_name() == name {
-                    Some(schema.rootpage())
-                } else {
-                    None
-                }
-            })
+            .find(|s| s.r#type() == "table" && s.tbl_name() == name)
             .ok_or(err!("Not found \"{name}\" table"))?;
 
-        Ok(Table::new(self, rootpage))
+        Table::new(self, schema)
     }
 
     fn schemas(&self) -> Result<impl Iterator<Item = Schema>> {

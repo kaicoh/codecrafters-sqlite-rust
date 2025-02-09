@@ -25,3 +25,9 @@ impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
         err!("{value}")
     }
 }
+
+impl<'a> From<nom::error::Error<&'a str>> for Error {
+    fn from(value: nom::error::Error<&'a str>) -> Self {
+        err!("{value:#?}")
+    }
+}
