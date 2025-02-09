@@ -35,7 +35,7 @@ impl<'a> Sql<'a> {
                         .filter_map(|name| row.col(name).ok())
                         .map(|v| format!("{v}"))
                         .collect::<Vec<String>>()
-                        .join("\t")
+                        .join("|")
                 })
                 .collect()
         };
