@@ -33,7 +33,9 @@ impl<'a> Sql<'a> {
             conditions,
         } = self;
         let table = db.table(tbl_name)?;
-        let rows = table.rows()?.filter(|row| conditions.satisfy(row));
+        let rows = table
+            .search_rows(&conditions)?
+            .filter(|row| conditions.satisfy(row));
 
         let outputs = if count_rows(&columns) {
             vec![rows.count().to_string()]
@@ -79,5 +81,23 @@ impl Conditions {
         self.0.iter().all(|condition| match condition {
             Condition::Eq { col, value } => row.col(col).is_ok_and(|v| v == value.as_str()),
         })
+    }
+
+    pub fn cols(&self) -> Vec<&str> {
+        self.0
+            .iter()
+            .map(|c| match c {
+                Condition::Eq { col, .. } => col.as_str(),
+            })
+            .collect()
+    }
+
+    pub fn values(&self) -> Vec<&str> {
+        self.0
+            .iter()
+            .map(|c| match c {
+                Condition::Eq { value, .. } => value.as_str(),
+            })
+            .collect()
     }
 }

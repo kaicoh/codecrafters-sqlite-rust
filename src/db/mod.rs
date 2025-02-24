@@ -62,13 +62,9 @@ impl<R: Read + Seek> Db<R> {
         Ok(values)
     }
 
-    pub fn table(&self, name: &str) -> Result<Table<'_, R>> {
-        let schema = self
-            .schemas()?
-            .find(|s| s.r#type() == "table" && s.tbl_name() == name)
-            .ok_or(err!("Not found \"{name}\" table"))?;
-
-        Table::new(self, schema)
+    pub fn table<'a>(&'a self, name: &'a str) -> Result<Table<'a, R>> {
+        let schemas = self.schemas()?;
+        Table::builder(name).db(self).schemas(schemas).build()
     }
 
     fn schemas(&self) -> Result<impl Iterator<Item = Schema>> {
@@ -128,7 +124,7 @@ impl<R: Read + Seek> Db<R> {
 }
 
 #[derive(Debug)]
-struct PageBuffer(Rc<Vec<u8>>);
+pub struct PageBuffer(Rc<Vec<u8>>);
 
 impl From<Vec<u8>> for PageBuffer {
     fn from(value: Vec<u8>) -> Self {

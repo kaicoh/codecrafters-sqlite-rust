@@ -105,7 +105,7 @@ impl Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Page {
     header_offset: u64,
     cursor: Cursor<PageBuffer>,
@@ -149,6 +149,36 @@ impl Page {
                 Ok(BtreeSearch::Leaf(cell))
             }
             _ => Err(err!("Cannot get index b-tree node from rowid")),
+        }
+    }
+
+    pub fn btree_search(&mut self, last_rowid: RowId, key: &str) -> Result<BtreeIndexSearch> {
+        match self.r#type()? {
+            PageType::InteriorIndex => {
+                let search = match self
+                    .cells()?
+                    .into_iter()
+                    .find_map(next_index_page(last_rowid, key))
+                {
+                    Some((left, rowid)) => BtreeIndexSearch::PointerOrRowId(left, rowid),
+                    None => {
+                        let page_num = self
+                            .header()?
+                            .right_most_pointer
+                            .ok_or(err!("Not set right most pointer in interior index page"))?;
+                        BtreeIndexSearch::PointerOrRowId(page_num, None)
+                    }
+                };
+                Ok(search)
+            }
+            PageType::LeafIndex => {
+                let rowid = self
+                    .cells()?
+                    .into_iter()
+                    .find_map(next_rowid(last_rowid, key));
+                Ok(BtreeIndexSearch::RowId(rowid))
+            }
+            _ => Err(err!("Cannot use table b-tree node for index search")),
         }
     }
 
@@ -208,4 +238,43 @@ fn next_page(key: RowId) -> Box<dyn FnMut(Cell) -> Option<PageNum>> {
 
 fn next_cell(key: RowId) -> Box<dyn FnMut(&Cell) -> bool> {
     Box::new(move |cell: &Cell| cell.rowid().is_some_and(|rowid| rowid >= key))
+}
+
+#[derive(Debug)]
+pub enum BtreeIndexSearch {
+    PointerOrRowId(PageNum, Option<RowId>),
+    RowId(Option<RowId>),
+}
+
+type NextIndex = Box<dyn FnMut(Cell) -> Option<(PageNum, Option<RowId>)>>;
+
+fn next_index_page(last_rowid: RowId, key: &str) -> NextIndex {
+    let key = key.to_owned();
+
+    Box::new(move |cell: Cell| {
+        let key = key.as_str();
+
+        if let Some((v, rowid)) = cell.index_payload() {
+            if v > key {
+                return cell.left().map(|n| (n, None));
+            }
+            if rowid > last_rowid && v == key {
+                return cell.left().map(|n| (n, Some(rowid)));
+            }
+        }
+        None
+    })
+}
+
+fn next_rowid(last_rowid: RowId, key: &str) -> Box<dyn FnMut(Cell) -> Option<RowId>> {
+    let key = key.to_owned();
+
+    Box::new(move |cell: Cell| {
+        if let Some((v, rowid)) = cell.index_payload() {
+            if rowid > last_rowid && v == key.as_str() {
+                return Some(rowid);
+            }
+        }
+        None
+    })
 }

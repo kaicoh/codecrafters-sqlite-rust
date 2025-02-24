@@ -37,6 +37,30 @@ impl Cell {
         }
     }
 
+    pub fn left(&self) -> Option<PageNum> {
+        match self {
+            Self::InteriorIndex { left, .. } | Self::InteriorTable { left, .. } => Some(*left),
+            _ => None,
+        }
+    }
+
+    pub fn index_payload(&self) -> Option<(RecordValue, RowId)> {
+        match self {
+            Self::InteriorIndex { payload, .. } | Self::LeafIndex { payload } => {
+                let key = payload.column(0);
+                let rowid = payload.column(1).and_then(|v| {
+                    if let RecordValue::Int(n) = v {
+                        n.try_into().ok()
+                    } else {
+                        None
+                    }
+                });
+                key.zip(rowid)
+            }
+            _ => None,
+        }
+    }
+
     fn interior_index<R: Read + Seek>(r: &mut R) -> Result<Self> {
         let left = u32::from_be_bytes(utils::read_4_bytes(r)?);
         let size = Varint::new(r)?.value() as usize;
@@ -169,8 +193,9 @@ impl RecordValue {
                 Ok(Self::Int(val as i64))
             }
             SerialType::TwosComplement24 => {
-                let _bytes = utils::read_3_bytes(r)?;
-                unimplemented!()
+                let [b0, b1, b2] = utils::read_3_bytes(r)?;
+                let val = i32::from_be_bytes([0, b0, b1, b2]);
+                Ok(Self::Int(val as i64))
             }
             SerialType::TwosComplement32 => {
                 let bytes = utils::read_4_bytes(r)?;
@@ -224,5 +249,27 @@ impl PartialEq<&str> for RecordValue {
             Self::Text(t) => t.as_str() == *other,
             _ => false,
         }
+    }
+}
+
+impl PartialOrd<&str> for RecordValue {
+    fn partial_cmp(&self, other: &&str) -> Option<std::cmp::Ordering> {
+        match self {
+            Self::Text(t) => t.as_str().partial_cmp(*other),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_can_compare_with_strings() {
+        let val = RecordValue::Text("foo".into());
+        assert_eq!(val, "foo");
+        assert!(val > "bar");
+        assert!(val < "zoo");
     }
 }
